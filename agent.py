@@ -259,16 +259,16 @@ precision_lock = Lock()
 DEFAULT_CONFIG = {
     # Auto trading settings
     'auto_trading_enabled': True,  # Always enabled for production
-    'trading_symbols': ['BTCUSDT', 'ETHUSDT'],  # Reduced symbols for risk management
+    'trading_symbols': ['BTCUSDT'],  # Optimized for single-asset competition API
     
     # More aggressive position sizing for better trading
-    'trade_size_percent': 2.0,  # 2% per trade (increased from 1%)
-    'leverage': 10,  # 10x leverage (increased from 5x)
+    'trade_size_percent': 5.0,  # 5% per trade (increased to outpace decay)
+    'leverage': 10,  # 10x leverage
     'margin_type': 'ISOLATED',
     
-    # Balanced risk management
-    'stop_loss_percent': 0.5,  # 0.5% SL (increased from 0.2%)
-    'take_profit_percent': 1.0,  # 1.0% TP (increased from 0.5%)
+    # Balanced risk management - Adjusted to overcome 0.2% round-trip fees
+    'stop_loss_percent': 2.5,  # 2.5% SL (ROE%)
+    'take_profit_percent': 5.0,  # 5.0% TP (ROE%)
     'max_concurrent_positions': 20,  # Allow 20 positions at a time for user-selected tokens
     'one_position_per_symbol': True,
     'cooldown_seconds': 300,  # 5-minute cooldown between same symbol trades
@@ -393,11 +393,11 @@ class AutoTradeEngine:
         # Cooldown tracking per symbol
         self.last_trade_time: Dict[str, datetime] = {}
         
-        # Signal generation (more aggressive for testing)
+        # Signal generation (refined for higher conviction)
         self.strategy_config = {
-            'scalping': {'tp': 0.008, 'sl': 0.004, 'rsi_buy': 55, 'rsi_sell': 45}, 
-            'short':    {'tp': 0.015, 'sl': 0.008, 'rsi_buy': 60, 'rsi_sell': 40},
-            'swing':    {'tp': 0.040, 'sl': 0.020, 'rsi_buy': 65, 'rsi_sell': 35}
+            'scalping': {'tp': 5.0, 'sl': 2.5, 'rsi_buy': 45, 'rsi_sell': 55}, 
+            'short':    {'tp': 7.0, 'sl': 3.5, 'rsi_buy': 40, 'rsi_sell': 60},
+            'swing':    {'tp': 15.0, 'sl': 7.5, 'rsi_buy': 35, 'rsi_sell': 65}
         }
         
         # Trading state
@@ -534,7 +534,9 @@ class AutoTradeEngine:
                         break
                     
                     # Enhanced risk management before trading
+                    logger.info(f"Checking risk for {symbol}...")
                     if not self._pass_risk_checks(symbol):
+                        # Log why it failed (if not obvious)
                         continue
                     
                     self._evaluate_and_trade(symbol)
@@ -764,8 +766,23 @@ class AutoTradeEngine:
                         total_initial_margin += margin
                 
                 exposure_ratio = total_initial_margin / current_balance if current_balance > 0 else 0
-                if exposure_ratio >= max_exposure_ratio:
-                    logger.warning(f"Max capital exposure reached: {exposure_ratio:.2f} >= {max_exposure_ratio:.2f}")
+                
+                # Double check with API net_worth if possible (from balance_info)
+                net_worth = balance_info.get('wallet_balance', current_balance)
+                total_shares_value = 0
+                try:
+                    # Get actual shares value from position info
+                    for pos in positions:
+                        pos_amt = float(pos.get('positionAmt', 0))
+                        mark_price = float(pos.get('markPrice', 0))
+                        total_shares_value += abs(pos_amt) * mark_price
+                except:
+                    pass
+                
+                exposure_vs_net_worth = total_shares_value / net_worth if net_worth > 0 else 0
+                
+                if exposure_ratio >= max_exposure_ratio or exposure_vs_net_worth >= 0.58: # Leave small margin for 60% limit
+                    logger.warning(f"Max capital exposure reached: ROI Ratio {exposure_ratio:.2f} | NetWorth Ratio {exposure_vs_net_worth:.2f}")
                     return False
             except Exception as e:
                 logger.error(f"Error calculating exposure: {e}")
@@ -787,6 +804,7 @@ class AutoTradeEngine:
             
             # 6. Check one position per symbol
             if self.config.get('one_position_per_symbol', True) and symbol in self.open_positions:
+                logger.info(f"Skipping {symbol}: Position already open")
                 return False
             
             return True
@@ -812,12 +830,19 @@ class AutoTradeEngine:
                 return
 
             decay_rate = self.config.get('cash_decay_rate_per_minute', 0.0002)
-            # 0.02% per minute decay on cash balance
+            # 0.02% per minute decay on CASH balance
             
             if 'total_decay_applied' not in self.config:
                 self.config['total_decay_applied'] = 0.0
-                
-            decay_amount = self.config.get('start_of_day_balance', 0) * decay_rate * elapsed_minutes
+            
+            # FIX: Calculate decay on current cash, not starting total balance
+            try:
+                balance_details = get_futures_balance_detailed(self.client)
+                current_cash = balance_details.get('available_balance', 0)
+                decay_amount = current_cash * decay_rate * elapsed_minutes
+            except:
+                decay_amount = 0.0
+
             self.config['total_decay_applied'] += decay_amount
             self.config['last_decay_time'] = now.isoformat()
             
@@ -1106,7 +1131,7 @@ class AutoTradeEngine:
         precision = get_symbol_precision(self.client, symbol)
         
         # Guide Rule Check: No fractional shares (Quantity must be a positive whole number)
-        quantity = math.floor(quantity)
+        quantity = int(math.floor(quantity))
         
         # Validate quantity
         if quantity < precision['min_qty']:
@@ -1539,9 +1564,9 @@ class SignalBot:
         self.lock = Lock()
         
         self.strategy_config = {
-            'scalping': {'tp': 0.008, 'sl': 0.004, 'rsi_buy': 48, 'rsi_sell': 52}, 
-            'short':    {'tp': 0.015, 'sl': 0.008, 'rsi_buy': 45, 'rsi_sell': 55},
-            'swing':    {'tp': 0.040, 'sl': 0.020, 'rsi_buy': 40, 'rsi_sell': 60}
+            'scalping': {'tp': 0.005, 'sl': 0.0025, 'rsi_buy': 45, 'rsi_sell': 55}, 
+            'short':    {'tp': 0.007, 'sl': 0.0035, 'rsi_buy': 40, 'rsi_sell': 60},
+            'swing':    {'tp': 0.015, 'sl': 0.0075, 'rsi_buy': 35, 'rsi_sell': 65}
         }
     
     def fetch_data(self, symbol: str) -> dict:
