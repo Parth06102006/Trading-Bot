@@ -1,0 +1,24 @@
+# FastAPI Web Framework
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.5.0
+
+# HTTP Requests
+requests>=2.31.0
+aiohttp>=3.9.0
+urllib3>=2.1.0
+
+# Environment & Configuration
+python-dotenv>=1.0.0
+
+# Terminal UI (Rich Console)
+rich>=13.7.0
+
+# WebSocket Support
+websockets>=12.0
+
+# Date/Time utilities
+python-dateutil>=2.8.2
+
+# Type hints support
+typing-extensions>=4.9.0
