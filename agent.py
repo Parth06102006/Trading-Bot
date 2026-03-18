@@ -19,7 +19,7 @@ load_dotenv()
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-file_handler = logging.FileHandler("trading_bot.log")
+file_handler = logging.FileHandler("trading_bot.log", encoding='utf-8')
 file_handler.setFormatter(log_formatter)
 root_logger.addHandler(file_handler)
 console_handler = logging.StreamHandler()
@@ -168,6 +168,8 @@ class Client:
         return self._request("POST", "/fapi/v1/leverage", json_data={"symbol": symbol, "leverage": leverage})
     def futures_exchange_info(self):
         return self._request("GET", "/fapi/v1/exchangeInfo")
+    def get_symbol_ticker(self, symbol: str):
+        return self._request("GET", "/api/price", params={"symbol": symbol})
 MARKET_DATA_HEADERS = {
     'User-Agent': 'Mozilla/5.0',
     'X-API-Key': TEAM_API_KEY
@@ -194,7 +196,7 @@ DEFAULT_CONFIG = {
     'strategy': 'scalping',
     'signal_check_interval': 10,                                       
     'min_account_balance': 100.0,                         
-    'max_drawdown_percent': 5.0,                       
+    'max_drawdown_percent': 10.0,                       
     'tick_rate_seconds': 10,                                   
     'max_capital_exposure_ratio': 0.6,                               
     'transaction_fee_percent': 0.1,                          
@@ -247,7 +249,7 @@ class TradeTracker:
             sharpe = mean / std if std > 0 else 0
             summary = (
                 f"\n{'='*40}\n"
-                f"🏆 COMPETITION STATS (Tiebreaker Optimization)\n"
+                f"COMPETITION STATS (Tiebreaker Optimization)\n"
                 f"{'-'*40}\n"
                 f"Count: {len(self.returns)} trades\n"
                 f"Mean Return: {mean:+.4f}%\n"
@@ -270,9 +272,8 @@ class AutoTradeEngine:
         self.last_successful_connection = datetime.now()
         self.last_trade_time: Dict[str, datetime] = {}
         self.strategy_config = {
-            'scalping': {'tp': 5.0, 'sl': 2.5, 'rsi_buy': 40, 'rsi_sell': 60}, 
-            'short':    {'tp': 7.0, 'sl': 3.5, 'rsi_buy': 35, 'rsi_sell': 65},
-            'swing':    {'tp': 15.0, 'sl': 7.5, 'rsi_buy': 30, 'rsi_sell': 70}
+            'scalping': {'tp': 4.0, 'sl': 2.0, 'rsi_buy': 40, 'rsi_sell': 60}, 
+            'swing':    {'tp': 10.0, 'sl': 5.0, 'rsi_buy': 30, 'rsi_sell': 70}
         }
         self.open_positions: Set[str] = set()
         self.last_global_trade_time: datetime = datetime.now() - timedelta(seconds=10)                        
@@ -352,7 +353,7 @@ class AutoTradeEngine:
                     continue
                 self._apply_cash_decay()
                 self._monitor_and_close_positions()
-                symbols = self.config.get('trading_symbols', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'])
+                symbols = self.config.get('trading_symbols', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'LTCUSDT', 'ZECUSDT'])
                 signals = []
                 for symbol in symbols:
                     if not self.running or self.stop_event.is_set():
@@ -360,6 +361,7 @@ class AutoTradeEngine:
                     data = self._get_market_data_for_symbol(symbol)
                     if data:
                         signal = self._generate_signal(data)
+                        logger.info(f"[BOT] {symbol} is in {signal} MODE")
                         if signal != "HOLD":
                             signals.append({'symbol': symbol, 'signal': signal, 'data': data})
                 if signals:
@@ -462,7 +464,7 @@ class AutoTradeEngine:
                 raise
     def _close_all_positions(self):
         try:
-            logger.warning("🚨 CLOSING ALL POSITIONS...")
+            logger.warning("CLOSING ALL POSITIONS...")
             positions = self.client.futures_position_information()
             closed_count = 0
             for pos in positions:
@@ -470,7 +472,7 @@ class AutoTradeEngine:
                 position_amt = float(pos.get('positionAmt', 0))
                 if position_amt != 0:                    
                     side = "SELL" if position_amt > 0 else "BUY"
-                    quantity = abs(position_amt)
+                    quantity = int(abs(position_amt))
                     logger.info(f"Closing {symbol}: {side} {quantity}")
                     try:
                         try:
@@ -484,7 +486,7 @@ class AutoTradeEngine:
                             quantity=quantity
                         )
                         closed_count += 1
-                        logger.info(f"✅ Closed {symbol} position")
+                        logger.info(f"Closed {symbol} position")
                     except Exception as e:
                         logger.error(f"Failed to close {symbol}: {e}")
             logger.info(f"Total positions closed: {closed_count}")
@@ -529,7 +531,9 @@ class AutoTradeEngine:
                             mark_price = current_price
                         else:
                             try:
-                                d = self.client.get_symbol_ticker(symbol=asset)
+                                # Standardize to symbol for /api/price
+                                ticker_sym = asset.replace('USDT', '') if 'USDT' in asset else asset
+                                d = self.client.get_symbol_ticker(symbol=ticker_sym)
                                 mark_price = float(d.get('price', 0)) if isinstance(d, dict) else 0.0
                             except:
                                 mark_price = 0.0
@@ -651,14 +655,14 @@ class AutoTradeEngine:
         last_price = closes[-1]
         logger.debug(f"RSI: {rsi}, Change: {change:.2f}%, Avg Price: {avg_price:.2f}, Last Price: {last_price:.2f}")
         logger.debug(f"RSI Buy Threshold: {conf['rsi_buy']}, RSI Sell Threshold: {conf['rsi_sell']}")
-        if rsi <= conf['rsi_buy'] or (last_price > avg_price and change > 0.02):
-            logger.debug(f"BUY signal triggered - RSI: {rsi} <= {conf['rsi_buy']} OR momentum up {change:.2f}%")
+        if rsi <= conf['rsi_buy'] or (last_price > avg_price and change > 0.05):
+            logger.info(f"BUY signal triggered - RSI: {rsi} <= {conf['rsi_buy']} OR momentum up {change:.2f}%")
             return "BUY"
-        elif rsi >= conf['rsi_sell'] or (last_price < avg_price and change < -0.02):
-            logger.debug(f"SELL signal triggered - RSI: {rsi} >= {conf['rsi_sell']} OR momentum down {change:.2f}%")
+        elif rsi >= conf['rsi_sell'] or (last_price < avg_price and change < -0.05):
+            # For a long-only bot, SELL means exit. This is handled by _execute_trade_logic
+            logger.info(f"SELL signal triggered - RSI: {rsi} >= {conf['rsi_sell']} OR momentum down {change:.2f}%")
             return "SELL"
         else:
-            logger.debug(f"HOLD signal - RSI: {rsi} (between {conf['rsi_sell']} and {conf['rsi_buy']})") 
             return "HOLD"                                       
     def _get_market_data_for_symbol(self, symbol: str) -> dict:
         if not symbol.endswith('USDT'):
@@ -677,7 +681,7 @@ class AutoTradeEngine:
     def _execute_trade_logic(self, symbol: str, signal: str, data: dict):
         logger.info(f"EXECUTING: {signal} {symbol} @ ${data['price']:.2f}")
         if signal == "SELL" and symbol not in self.open_positions:
-            logger.warning(f"⚠️ Skipping SELL signal for {symbol}: No open BUY position to close.")
+            logger.warning(f"Skipping SELL signal for {symbol}: No open BUY position to close.")
             return
         if signal == "SELL":
             # For SELL, close the existing position using the actual held quantity
@@ -688,7 +692,7 @@ class AutoTradeEngine:
                     self.config['trades_today'] = self.config.get('trades_today', 0) + 1
                     self.last_trade_time[symbol] = datetime.now()
                     self.open_positions.discard(symbol)
-                    logger.info(f"✅ CLOSED position: {symbol} @ ${data['price']:.2f}")
+                    logger.info(f"CLOSED position: {symbol} @ ${data['price']:.2f}")
                 else:
                     logger.error(f"FAILED to close {symbol}: {close_res.get('error')}")
             except Exception as e:
@@ -704,7 +708,7 @@ class AutoTradeEngine:
                 'symbol': symbol, 'side': signal, 'price': data['price'],
                 'time': datetime.now().isoformat(), 'result': result
             }
-            logger.info(f"✅ SUCCESS: {signal} {symbol} @ ${data['price']:.2f}")
+            logger.info(f"SUCCESS: {signal} {symbol} @ ${data['price']:.2f}")
         else:
             logger.error(f"FAILED: {symbol} - {result.get('error')}")
     def _execute_auto_trade(self, symbol: str, side: str, current_price: float) -> dict:
@@ -753,7 +757,7 @@ class AutoTradeEngine:
         notional_value = trade_amount * leverage
         quantity = notional_value / current_price
         precision = get_symbol_precision(self.client, symbol)
-        quantity = round_step_size(quantity, precision['step_size'])
+        quantity = int(max(precision['min_qty'], quantity)) # Enforce whole number as per rules
         if quantity < precision['min_qty']:
             logger.warning(f"Quantity {quantity} below minimum {precision['min_qty']}, forcing min_qty {precision['min_qty']}")
             quantity = precision['min_qty']
@@ -764,16 +768,15 @@ class AutoTradeEngine:
         fee_buffer = required_margin * 0.01 
         if (required_margin + fee_buffer) > available_balance:
             return {"success": False, "error": f"Insufficient margin (with fee buffer). Required: ${(required_margin + fee_buffer):.2f}, Available: ${available_balance:.2f}"}
+        if side != 'BUY':
+            return {"success": False, "error": "Short selling not permitted. Entry orders must be BUY."}
+            
         tp_price_change = (tp_percent / leverage) / 100
         sl_price_change = (sl_percent / leverage) / 100
-        if side == 'BUY':
-            tp_price = round(current_price * (1 + tp_price_change), precision['price_precision'])
-            sl_price = round(current_price * (1 - sl_price_change), precision['price_precision'])
-            close_side = 'SELL'
-        else:
-            tp_price = round(current_price * (1 - tp_price_change), precision['price_precision'])
-            sl_price = round(current_price * (1 + sl_price_change), precision['price_precision'])
-            close_side = 'BUY'
+        
+        tp_price = round(current_price * (1 + tp_price_change), precision['price_precision'])
+        sl_price = round(current_price * (1 - sl_price_change), precision['price_precision'])
+        close_side = 'SELL'
         position_side = "BOTH"
         logger.info(f"Executing {side}: {quantity} {symbol} @ ~${current_price}")
         logger.info(f"  TP: ${tp_price} | SL: ${sl_price} | Leverage: {leverage}x")
@@ -981,8 +984,7 @@ def close_position(client: Client, symbol: str) -> dict:
         close_side = 'SELL' if pos_amt > 0 else 'BUY'
         position_side = position.get('positionSide', 'BOTH')
         try:
-            precision = get_symbol_precision(client, symbol)
-            quantity = round_step_size(quantity, precision['step_size'])
+            quantity = int(quantity) # Enforce whole number close
         except Exception as e:
             logger.warning(f"[CLOSE] Precision fetch warning: {e}")
         try:
@@ -1062,9 +1064,8 @@ class SignalBot:
         self.last_update = datetime.now()
         self.lock = Lock()
         self.strategy_config = {
-            'scalping': {'tp': 0.005, 'sl': 0.0025, 'rsi_buy': 45, 'rsi_sell': 55}, 
-            'short':    {'tp': 0.007, 'sl': 0.0035, 'rsi_buy': 40, 'rsi_sell': 60},
-            'swing':    {'tp': 0.015, 'sl': 0.0075, 'rsi_buy': 35, 'rsi_sell': 65}
+            'scalping': {'tp': 0.04, 'sl': 0.02, 'rsi_buy': 45, 'rsi_sell': 55}, 
+            'swing':    {'tp': 0.10, 'sl': 0.05, 'rsi_buy': 35, 'rsi_sell': 65}
         }
     def fetch_data(self, symbol: str) -> dict:
         try:
@@ -1092,14 +1093,16 @@ class SignalBot:
             
             rsi = calculate_rsi(closes)
             signal = self._gen_signal(rsi, change, closes, 'scalping')
+            logger.info(f"[SIGNAL BOT] {symbol} is in {signal} MODE")
             tp, sl = "---", "---"
             conf = self.strategy_config['scalping']
             if signal == "BUY":
                 tp = f"{price * (1 + conf['tp']):.2f}"
                 sl = f"{price * (1 - conf['sl']):.2f}"
             elif signal == "SELL":
-                tp = f"{price * (1 - conf['tp']):.2f}"
-                sl = f"{price * (1 + conf['sl']):.2f}"
+                # Only show EXIT levels if we were to have a position
+                tp = f"EXIT @ {price * (1 + conf['tp']):.2f}"
+                sl = f"EXIT @ {price * (1 - conf['sl']):.2f}"
             return {
                 'symbol': symbol.replace('USDT', ''),
                 'price': price,
